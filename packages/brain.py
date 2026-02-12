@@ -72,6 +72,9 @@ class Brain:
                 target_module = "達B"
             dist = self.MODULE_CONFIG[target_module]
 
+        # 1.5 Filter out non-multiple-choice questions (題號 contains '非選')
+        scoped_df = scoped_df[~scoped_df['題號'].astype(str).str.contains('非選')]
+
         # 2. Add UID
         # Check if UID exists or add it. (Safety check if global DF wasn't mutated permanently in init)
         # It's better to do it on scoped_df
