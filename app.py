@@ -108,7 +108,7 @@ def _render_unit_charts(student_id, history_df, qb_df):
     # --- 建立 UID → 單元 對照 ---
     qb = qb_df.copy()
     qb['UID'] = qb['年份'].astype(str) + "_" + qb['來源'].astype(str) + "_" + qb['題號'].astype(str)
-    uid_to_unit = qb[['UID', '單元']].drop_duplicates().set_index('UID')['單元']
+    uid_to_unit = qb.drop_duplicates(subset=['UID'])[['UID', '單元']].set_index('UID')['單元'].to_dict()
 
     # --- Join 單元 ---
     student_history['單元'] = student_history['Question_ID'].map(uid_to_unit)
