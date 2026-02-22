@@ -479,8 +479,27 @@ def render_system_1():
                     student_sys.save_session(student['Student_ID'], uids, mode_key, target_mod)
                     st.session_state["quiz_data"] = questions
                     st.session_state["quiz_active"] = True
+                    st.session_state["quiz_mode"] = mode_key
                     st.session_state["quiz_start_time"] = datetime.now()
                     st.session_state["current_answers"] = {}
+
+                    # 計算各單元答對率，供 Phase 2 題目旁顯示
+                    unit_stats = {}
+                    if history_df is not None and not history_df.empty:
+                        try:
+                            sh = history_df[history_df['Student_ID'] == str(student['Student_ID'])].copy()
+                            qb_u = df.copy()
+                            qb_u['UID'] = qb_u['年份'].astype(str) + "_" + qb_u['來源'].astype(str) + "_" + qb_u['題號'].astype(str)
+                            uid2unit = qb_u.drop_duplicates(subset=['UID'])[['UID', '單元']].set_index('UID')['單元'].to_dict()
+                            sh['單元'] = sh['Question_ID'].map(uid2unit)
+                            sh = sh.dropna(subset=['單元'])
+                            sh['correct'] = sh['Result'].apply(lambda x: 1 if str(x).upper() in ['TRUE', '1', 'CORRECT', 'YES'] else 0)
+                            grp = sh.groupby('單元')['correct'].agg(correct='sum', total='count')
+                            unit_stats = {u: round(row['correct'] / row['total'] * 100, 1) for u, row in grp.iterrows()}
+                        except Exception:
+                            pass
+                    st.session_state["quiz_unit_stats"] = unit_stats
+
                     st.rerun()
 
     # ── 右欄：知識點統計圖表 ──
@@ -587,11 +606,27 @@ def render_quiz_session(student_sys, student):
 
     # Current Question
     row = questions.iloc[current_idx]
-    
-    # 1. Header (Match Word Generation Format)
-    # Format: 【Year Source】 題號：No 單元：Unit 難易度：Diff
+
+    # 1. Header
     header_text = f"【{row.get('年份')} {row.get('來源')}】  題號：{row.get('題號')}  單元：{row.get('單元')}  難易度：{row.get('難易度')}"
     st.info(header_text)
+
+    # Phase 2：顯示此知識點的歷史答對率（供確認出題邏輯）
+    if st.session_state.get("quiz_mode") == "phase2":
+        unit = row.get('單元', '')
+        unit_stats = st.session_state.get("quiz_unit_stats", {})
+        if unit and unit in unit_stats:
+            rate = unit_stats[unit]
+            if rate < 40:
+                badge = f"🔴 此知識點「{unit}」歷史答對率：**{rate}%**（弱點題）"
+            elif rate <= 70:
+                badge = f"🟠 此知識點「{unit}」歷史答對率：**{rate}%**（一般題）"
+            else:
+                badge = f"🟢 此知識點「{unit}」歷史答對率：**{rate}%**（精熟題）"
+            st.caption(badge)
+        elif unit:
+            st.caption(f"📋 此知識點「{unit}」尚無歷史答對率資料")
+
     
     # 2. Image Display
     image_name = row.get('圖檔名')
