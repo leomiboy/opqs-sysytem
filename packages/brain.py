@@ -80,13 +80,14 @@ class Brain:
         # It's better to do it on scoped_df
         scoped_df['UID'] = scoped_df['年份'].astype(str) + "_" + scoped_df['來源'].astype(str) + "_" + scoped_df['題號'].astype(str)
 
-        # 3. Filter out history (Anti-Repeat)
+        # 3. Anti-Repeat（只對 Phase 1 有效，Phase 2 不限制重複）
         available_df = scoped_df.copy()
         done_q_ids = set()
         if history_df is not None and not history_df.empty:
             student_history = history_df[history_df['Student_ID'] == str(student_id)]
             done_q_ids = set(student_history['Question_ID'].unique())
-            available_df = available_df[~available_df['UID'].isin(done_q_ids)]
+            if mode == "phase1":
+                available_df = available_df[~available_df['UID'].isin(done_q_ids)]
 
         # 4. Selection Logic
         selected_dfs = []
@@ -109,7 +110,6 @@ class Brain:
                 if not done_pool.empty:
                     fill = done_pool.sample(n=min(need_more, len(done_pool)))
                     selected_dfs.append(fill)
-                # 已選好，直接跳到 concat 回傳
                 if selected_dfs:
                     return pd.concat(selected_dfs).sample(frac=1).reset_index(drop=True)
                 return pd.DataFrame()
