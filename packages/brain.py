@@ -186,6 +186,45 @@ class Brain:
         final_df = pd.concat(selected_dfs).sample(frac=1) # Shuffle
         return final_df
 
+    def is_phase1_complete(self, student_id, history_df, module_config_override=None, target_module=None):
+        """
+        判斷學生是否已完成 Phase 1（刷過模組範圍內所有題目至少一次）。
+        Returns (is_complete: bool, done_count: int, total_count: int)
+        """
+        # 套用模組 scope（同 get_questions_for_practice 的過濾邏輯）
+        scoped_df = self.qb_df.copy()
+        if module_config_override:
+            f_source = module_config_override.get('Filter_Source', 'ALL')
+            f_year   = module_config_override.get('Filter_Year', 'ALL')
+            f_unit   = module_config_override.get('Filter_Unit', 'ALL')
+            f_diff   = module_config_override.get('Filter_Diff', 'ALL')
+            if f_source and f_source != "ALL":
+                scoped_df = scoped_df[scoped_df['來源'].isin(f_source.split(","))]
+            if f_year and f_year != "ALL":
+                scoped_df = scoped_df[scoped_df['年份'].astype(str).isin(f_year.split(","))]
+            if f_unit and f_unit != "ALL":
+                scoped_df = scoped_df[scoped_df['單元'].isin(f_unit.split(","))]
+            if f_diff and f_diff != "ALL":
+                scoped_df = scoped_df[scoped_df['難易度'].isin(f_diff.split(","))]
+
+        # 排除非選題
+        scoped_df = scoped_df[~scoped_df['題號'].astype(str).str.contains('非選')]
+        # 建 UID
+        scoped_df['UID'] = scoped_df['年份'].astype(str) + "_" + scoped_df['來源'].astype(str) + "_" + scoped_df['題號'].astype(str)
+
+        total_count = len(scoped_df)
+        if total_count == 0:
+            return True, 0, 0  # 空模組視為完成
+
+        done_q_ids = set()
+        if history_df is not None and not history_df.empty:
+            student_history = history_df[history_df['Student_ID'] == str(student_id)]
+            done_q_ids = set(student_history['Question_ID'].unique())
+
+        done_count = len(scoped_df[scoped_df['UID'].isin(done_q_ids)])
+        is_complete = (done_count >= total_count)
+        return is_complete, done_count, total_count
+
     def analyze_weakness(self, student_id, history_df):
         """
         Analyze student's weakness based on knowledge tags (單元).

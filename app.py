@@ -210,9 +210,34 @@ def render_system_1():
     st.subheader("📝 開始練習")
     mode_label = st.radio("選擇模式", ["Phase 1: 廣度隨機練習", "Phase 2: 深度弱點加強"], horizontal=True)
     mode_key = "phase1" if "Phase 1" in mode_label else "phase2"
-    
+
+    # ── 判斷 Phase 1 是否完成（用於解鎖 Phase 2 與 Dashboard 提示）──
+    _history_df_dash = None
+    try:
+        _res = student_sys.sheets_service.spreadsheets().values().get(
+            spreadsheetId=DIGITAL_FOOTPRINT_ID,
+            range="'Digital_Footprint'!A:G"
+        ).execute()
+        _fp_vals = _res.get('values', [])
+        if _fp_vals and len(_fp_vals) >= 2:
+            _history_df_dash = pd.DataFrame(_fp_vals[1:], columns=_fp_vals[0])
+    except Exception:
+        pass
+
+    _df_dash = load_data(QUESTION_BANK_ID)
+    _brain_dash = Brain(_df_dash)
+    _p1_done, _p1_cnt, _p1_total = _brain_dash.is_phase1_complete(
+        student['Student_ID'], _history_df_dash,
+        module_config_override=mod_info, target_module=target_mod
+    )
+
+    if _p1_done:
+        st.success(f"✅ 第一階段廣度挑題已完成（{_p1_cnt}/{_p1_total} 題），可自由選擇廣度或深度階段練習！")
+    else:
+        st.info(f"📊 第一階段進度：{_p1_cnt}/{_p1_total} 題（完成所有廣度題目後可解鎖第二階段）")
+
     c_start, c_dl = st.columns([1, 1])
-    
+
     with c_dl:
         if st.button("📄 下載模擬試卷 (A4)", use_container_width=True):
             with st.spinner("正在生成 A4 模擬試卷..."):
@@ -252,6 +277,11 @@ def render_system_1():
     start_clicked = False
     with c_start:
         start_clicked = st.button("🚀 開始測驗 (5題)", use_container_width=True)
+
+    # Phase 2 解鎖檢查
+    if start_clicked and mode_key == "phase2" and not _p1_done:
+        st.warning("⚠️ 尚未完成第一階段，請完成第一階段後再做弱點的挑題練習。")
+        start_clicked = False  # 攔截，不繼續
 
     if start_clicked:
         with st.spinner("正在為您挑選題目... (The Brain 運算中)"):
@@ -356,6 +386,33 @@ def render_quiz_session(student_sys, student):
                     
                     st.session_state["quiz_logged"] = True
                     st.success("✅ 成績已雲端同步！")
+
+                    # ── 檢查寫入後是否完成 Phase 1 ──
+                    try:
+                        _res2 = student_sys.sheets_service.spreadsheets().values().get(
+                            spreadsheetId=DIGITAL_FOOTPRINT_ID,
+                            range="'Digital_Footprint'!A:G"
+                        ).execute()
+                        _fp2 = _res2.get('values', [])
+                        if _fp2 and len(_fp2) >= 2:
+                            _hist2 = pd.DataFrame(_fp2[1:], columns=_fp2[0])
+                        else:
+                            _hist2 = None
+                        _df2 = load_data(QUESTION_BANK_ID)
+                        _br2 = Brain(_df2)
+                        target_mod2 = student.get('Target_Module', '')
+                        mod_info2   = student_sys.get_module(target_mod2)
+                        _done2, _cnt2, _tot2 = _br2.is_phase1_complete(
+                            student['Student_ID'], _hist2,
+                            module_config_override=mod_info2
+                        )
+                        if _done2:
+                            st.info("🎊 已完成第一階段的廣度挑題，可進入第二階段的深度弱點挑題！")
+                        else:
+                            st.info(f"📊 第一階段進度：{_cnt2}/{_tot2} 題（繼續加油！）")
+                    except Exception:
+                        pass
+
                 else:
                     st.error("⚠️ 雲端寫入失敗，請截圖此畫面並聯繫老師。")
                     # Optionally allow retry
