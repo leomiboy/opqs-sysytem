@@ -92,25 +92,52 @@ import plotly.graph_objects as go
 def _render_unit_charts(student_id, history_df, qb_df):
     """
     右側知識點統計圖表：
-    - 圖表 A：各知識點答對/答錯次數水平堆疊長條圖
-    - 圖表 C：答對率由低到高排行（含答題次數）
+    - 圖表 A：各知識點答對/答錯次數水平堆疊長條圖（依冊別固定順序）
+    - 圖表 C：答對率由高到低排行（含分式）
     """
+    # 21 個知識點的固定順序與冊別對應
+    UNIT_ORDER = [
+        "整數的運算", "分數的運算", "一元一次方程式",                                   # 第一冊
+        "二元一次聯立方程式", "二元一次方程式的圖形", "比與比例式",                       # 第二冊
+        "一元一次不等式", "線對稱與三視圖", "統計圖表與統計量",                           # 第二冊（續）
+        "乘法公式與多項式", "平方根與畢氏定理", "因式分解與一元二次方程式",               # 第三冊
+        "數列與級數", "函數", "三角形的基本性質", "平行與四邊形",                         # 第四冊
+        "連比例與相似形", "圓", "幾何與證明",                                             # 第五冊
+        "二次函數", "統計與機率、立體圖形",                                               # 第六冊
+    ]
+    # 冊別分隔：每冊的最後一個單元 index（0-based），在其後畫分隔線
+    BOOK_DIVIDERS = {
+        2:  "─── 第一冊 ───",
+        8:  "─── 第二冊 ───",
+        11: "─── 第三冊 ───",
+        15: "─── 第四冊 ───",
+        18: "─── 第五冊 ───",
+        20: "─── 第六冊 ───",
+    }
+    # 每個單元屬於哪一冊
+    UNIT_BOOK = {}
+    for i, u in enumerate(UNIT_ORDER):
+        if   i <= 2:  UNIT_BOOK[u] = "第一冊"
+        elif i <= 8:  UNIT_BOOK[u] = "第二冊"
+        elif i <= 11: UNIT_BOOK[u] = "第三冊"
+        elif i <= 15: UNIT_BOOK[u] = "第四冊"
+        elif i <= 18: UNIT_BOOK[u] = "第五冊"
+        else:         UNIT_BOOK[u] = "第六冊"
+
     if history_df is None or history_df.empty:
         st.info("尚無答題紀錄，完成第一輪練習後即可看到統計圖表。")
         return
 
-    # --- 取得該學生的 history ---
     student_history = history_df[history_df['Student_ID'] == str(student_id)].copy()
     if student_history.empty:
         st.info("尚無答題紀錄，完成第一輪練習後即可看到統計圖表。")
         return
 
-    # --- 建立 UID → 單元 對照 ---
+    # UID → 單元 對照（dict 避免 non-unique index 問題）
     qb = qb_df.copy()
     qb['UID'] = qb['年份'].astype(str) + "_" + qb['來源'].astype(str) + "_" + qb['題號'].astype(str)
     uid_to_unit = qb.drop_duplicates(subset=['UID'])[['UID', '單元']].set_index('UID')['單元'].to_dict()
 
-    # --- Join 單元 ---
     student_history['單元'] = student_history['Question_ID'].map(uid_to_unit)
     student_history = student_history.dropna(subset=['單元'])
 
@@ -118,47 +145,64 @@ def _render_unit_charts(student_id, history_df, qb_df):
         st.warning("無法對應知識點，請確認題庫資料。")
         return
 
-    # --- 統計答對/答錯 ---
     student_history['correct'] = student_history['Result'].apply(
         lambda x: 1 if str(x).upper() in ['TRUE', '1', 'CORRECT', 'YES'] else 0
     )
     stats = student_history.groupby('單元')['correct'].agg(
-        答對='sum',
-        總次數='count'
+        答對='sum', 總次數='count'
     ).reset_index()
     stats['答錯'] = stats['總次數'] - stats['答對']
     stats['答對率'] = (stats['答對'] / stats['總次數'] * 100).round(1)
+    stats['冊別'] = stats['單元'].map(UNIT_BOOK)
 
-    # ── 圖表 A：水平堆疊長條圖 ──
-    stats_a = stats.sort_values('單元')
+    # ────────────────────────────────────────────
+    # 圖表 A：各知識點答題次數（固定冊別順序，由上到下）
+    # ────────────────────────────────────────────
+    # 以 UNIT_ORDER 為基準，只顯示有答題記錄的單元，保持相對順序
+    ordered_units = [u for u in UNIT_ORDER if u in stats['單元'].values]
+    stats_a = stats.set_index('單元').reindex(ordered_units).reset_index()
+
+    # Y 軸：由上到下 = index 由小到大 + autorange='reversed'
+    # 加入冊別前綴讓標籤更清楚
+    book_label = {u: f"[{UNIT_BOOK[u]}] {u}" for u in ordered_units}
+    y_labels = [book_label[u] for u in ordered_units]
+
+    BOOK_COLORS = {
+        "第一冊": "#3498db", "第二冊": "#9b59b6", "第三冊": "#e67e22",
+        "第四冊": "#1abc9c", "第五冊": "#e74c3c", "第六冊": "#f39c12",
+    }
+    bar_colors = [BOOK_COLORS.get(UNIT_BOOK.get(u, ""), "#95a5a6") for u in ordered_units]
+
     fig_a = go.Figure()
     fig_a.add_trace(go.Bar(
         name='答對',
-        y=stats_a['單元'],
+        y=y_labels,
         x=stats_a['答對'],
         orientation='h',
         marker_color='#2ecc71',
         text=stats_a['答對'],
         textposition='inside',
+        insidetextanchor='middle',
     ))
     fig_a.add_trace(go.Bar(
         name='答錯',
-        y=stats_a['單元'],
+        y=y_labels,
         x=stats_a['答錯'],
         orientation='h',
         marker_color='#e74c3c',
         text=stats_a['答錯'],
         textposition='inside',
+        insidetextanchor='middle',
     ))
     fig_a.update_layout(
         barmode='stack',
-        title='各知識點答題次數',
+        title='各知識點答題次數（依冊別排列）',
         title_font_size=14,
         margin=dict(l=10, r=10, t=40, b=10),
-        height=max(300, len(stats_a) * 28),
+        height=max(400, len(ordered_units) * 32),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         xaxis_title='次數',
-        yaxis=dict(autorange='reversed'),
+        yaxis=dict(autorange='reversed', tickfont=dict(size=11)),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
     )
@@ -166,32 +210,40 @@ def _render_unit_charts(student_id, history_df, qb_df):
 
     st.markdown("---")
 
-    # ── 圖表 C：答對率排行（由低到高） ──
-    stats_c = stats.sort_values('答對率', ascending=True)
+    # ────────────────────────────────────────────
+    # 圖表 C：答對率排行（由高到低，高分在上）
+    # ────────────────────────────────────────────
+    stats_c = stats.sort_values('答對率', ascending=False)  # 高分在上 → autorange 不 reversed
     color_list = [
-        '#e74c3c' if r < 40 else ('#f39c12' if r < 70 else '#2ecc71')
+        '#2ecc71' if r >= 70 else ('#f39c12' if r >= 40 else '#e74c3c')
         for r in stats_c['答對率']
+    ]
+    # 標籤統一顯示「XX%（答對/總次數）」，100% 全對也顯示分式
+    label_texts = [
+        f"{r}%（{int(c)}/{int(t)}）"
+        for r, c, t in zip(stats_c['答對率'], stats_c['答對'], stats_c['總次數'])
     ]
     fig_c = go.Figure(go.Bar(
         x=stats_c['答對率'],
         y=stats_c['單元'],
         orientation='h',
         marker_color=color_list,
-        text=[f"{r}%（{c}/{t}）" for r, c, t in zip(stats_c['答對率'], stats_c['答對'], stats_c['總次數'])],
+        text=label_texts,
         textposition='outside',
     ))
     fig_c.update_layout(
-        title='知識點答對率排行（🔴<40% 🟠40-70% 🟢>70%）',
+        title='知識點答對率排行（🟢≥70% 🟠40-70% 🔴<40%）',
         title_font_size=13,
-        margin=dict(l=10, r=80, t=45, b=10),
-        height=max(300, len(stats_c) * 28),
-        xaxis=dict(range=[0, 115], title='答對率 (%)'),
-        yaxis=dict(autorange='reversed'),
+        margin=dict(l=10, r=100, t=45, b=10),
+        height=max(400, len(stats_c) * 32),
+        xaxis=dict(range=[0, 125], title='答對率 (%)'),
+        yaxis=dict(autorange='reversed'),  # 高分在最上面
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         showlegend=False,
     )
     st.plotly_chart(fig_c, use_container_width=True)
+
 
 def render_system_1():
 
