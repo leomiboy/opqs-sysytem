@@ -87,8 +87,114 @@ def render_system_1():
                 st.error(f"讀取 CSV 失敗: {e}")
 
 from packages.brain import Brain
+import plotly.graph_objects as go
+
+def _render_unit_charts(student_id, history_df, qb_df):
+    """
+    右側知識點統計圖表：
+    - 圖表 A：各知識點答對/答錯次數水平堆疊長條圖
+    - 圖表 C：答對率由低到高排行（含答題次數）
+    """
+    if history_df is None or history_df.empty:
+        st.info("尚無答題紀錄，完成第一輪練習後即可看到統計圖表。")
+        return
+
+    # --- 取得該學生的 history ---
+    student_history = history_df[history_df['Student_ID'] == str(student_id)].copy()
+    if student_history.empty:
+        st.info("尚無答題紀錄，完成第一輪練習後即可看到統計圖表。")
+        return
+
+    # --- 建立 UID → 單元 對照 ---
+    qb = qb_df.copy()
+    qb['UID'] = qb['年份'].astype(str) + "_" + qb['來源'].astype(str) + "_" + qb['題號'].astype(str)
+    uid_to_unit = qb[['UID', '單元']].drop_duplicates().set_index('UID')['單元']
+
+    # --- Join 單元 ---
+    student_history['單元'] = student_history['Question_ID'].map(uid_to_unit)
+    student_history = student_history.dropna(subset=['單元'])
+
+    if student_history.empty:
+        st.warning("無法對應知識點，請確認題庫資料。")
+        return
+
+    # --- 統計答對/答錯 ---
+    student_history['correct'] = student_history['Result'].apply(
+        lambda x: 1 if str(x).upper() in ['TRUE', '1', 'CORRECT', 'YES'] else 0
+    )
+    stats = student_history.groupby('單元')['correct'].agg(
+        答對='sum',
+        總次數='count'
+    ).reset_index()
+    stats['答錯'] = stats['總次數'] - stats['答對']
+    stats['答對率'] = (stats['答對'] / stats['總次數'] * 100).round(1)
+
+    # ── 圖表 A：水平堆疊長條圖 ──
+    stats_a = stats.sort_values('單元')
+    fig_a = go.Figure()
+    fig_a.add_trace(go.Bar(
+        name='答對',
+        y=stats_a['單元'],
+        x=stats_a['答對'],
+        orientation='h',
+        marker_color='#2ecc71',
+        text=stats_a['答對'],
+        textposition='inside',
+    ))
+    fig_a.add_trace(go.Bar(
+        name='答錯',
+        y=stats_a['單元'],
+        x=stats_a['答錯'],
+        orientation='h',
+        marker_color='#e74c3c',
+        text=stats_a['答錯'],
+        textposition='inside',
+    ))
+    fig_a.update_layout(
+        barmode='stack',
+        title='各知識點答題次數',
+        title_font_size=14,
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=max(300, len(stats_a) * 28),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        xaxis_title='次數',
+        yaxis=dict(autorange='reversed'),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+    )
+    st.plotly_chart(fig_a, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── 圖表 C：答對率排行（由低到高） ──
+    stats_c = stats.sort_values('答對率', ascending=True)
+    color_list = [
+        '#e74c3c' if r < 40 else ('#f39c12' if r < 70 else '#2ecc71')
+        for r in stats_c['答對率']
+    ]
+    fig_c = go.Figure(go.Bar(
+        x=stats_c['答對率'],
+        y=stats_c['單元'],
+        orientation='h',
+        marker_color=color_list,
+        text=[f"{r}%（{c}/{t}）" for r, c, t in zip(stats_c['答對率'], stats_c['答對'], stats_c['總次數'])],
+        textposition='outside',
+    ))
+    fig_c.update_layout(
+        title='知識點答對率排行（🔴<40% 🟠40-70% 🟢>70%）',
+        title_font_size=13,
+        margin=dict(l=10, r=80, t=45, b=10),
+        height=max(300, len(stats_c) * 28),
+        xaxis=dict(range=[0, 115], title='答對率 (%)'),
+        yaxis=dict(autorange='reversed'),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        showlegend=False,
+    )
+    st.plotly_chart(fig_c, use_container_width=True)
 
 def render_system_1():
+
     st.subheader("🎓 學生線上練習系統")
     student_sys = StudentSystem(DIGITAL_FOOTPRINT_ID)
     if "schema_initialized" not in st.session_state:
@@ -205,135 +311,133 @@ def render_system_1():
             st.rerun()
             
     st.divider()
-    
-    # 練習模式選擇
-    st.subheader("📝 開始練習")
-    mode_label = st.radio("選擇模式", ["Phase 1: 廣度隨機練習", "Phase 2: 深度弱點加強"], horizontal=True)
-    mode_key = "phase1" if "Phase 1" in mode_label else "phase2"
 
-    # ── 判斷 Phase 1 是否完成（用於解鎖 Phase 2 與 Dashboard 提示）──
-    _history_df_dash = None
-    try:
-        _res = student_sys.sheets_service.spreadsheets().values().get(
-            spreadsheetId=DIGITAL_FOOTPRINT_ID,
-            range="'Digital_Footprint'!A:G"
-        ).execute()
-        _fp_vals = _res.get('values', [])
-        if _fp_vals and len(_fp_vals) >= 2:
-            _history_df_dash = pd.DataFrame(_fp_vals[1:], columns=_fp_vals[0])
-    except Exception:
-        pass
+    # ── 左右分欄：左側操作 / 右側圖表 ──
+    col_left, col_right = st.columns([1, 1], gap="large")
 
-    _df_dash = load_data(QUESTION_BANK_ID)
-    _brain_dash = Brain(_df_dash)
-    _p1_done, _p1_cnt, _p1_total = _brain_dash.is_phase1_complete(
-        student['Student_ID'], _history_df_dash,
-        module_config_override=mod_info, target_module=target_mod
-    )
+    with col_left:
+        # 練習模式選擇
+        st.subheader("📝 開始練習")
+        mode_label = st.radio("選擇模式", ["Phase 1: 廣度隨機練習", "Phase 2: 深度弱點加強"], horizontal=True)
+        mode_key = "phase1" if "Phase 1" in mode_label else "phase2"
 
-    if _p1_done:
-        st.success(f"✅ 第一階段廣度挑題已完成（{_p1_cnt}/{_p1_total} 題），可自由選擇廣度或深度階段練習！")
-    else:
-        st.info(f"📊 第一階段進度：{_p1_cnt}/{_p1_total} 題（完成所有廣度題目後可解鎖第二階段）")
+        # ── 判斷 Phase 1 是否完成（用於解鎖 Phase 2 與 Dashboard 提示）──
+        _history_df_dash = None
+        try:
+            _res = student_sys.sheets_service.spreadsheets().values().get(
+                spreadsheetId=DIGITAL_FOOTPRINT_ID,
+                range="'Digital_Footprint'!A:G"
+            ).execute()
+            _fp_vals = _res.get('values', [])
+            if _fp_vals and len(_fp_vals) >= 2:
+                _history_df_dash = pd.DataFrame(_fp_vals[1:], columns=_fp_vals[0])
+        except Exception:
+            pass
 
-    c_start, c_dl = st.columns([1, 1])
+        _df_dash = load_data(QUESTION_BANK_ID)
+        _brain_dash = Brain(_df_dash)
+        _p1_done, _p1_cnt, _p1_total = _brain_dash.is_phase1_complete(
+            student['Student_ID'], _history_df_dash,
+            module_config_override=mod_info, target_module=target_mod
+        )
 
-    with c_dl:
-        if st.button("📄 下載模擬試卷 (A4)", use_container_width=True):
-            with st.spinner("正在生成 A4 模擬試卷..."):
-                # 1. Load Data
-                df_dl = load_data(QUESTION_BANK_ID)
-                brain_dl = Brain(df_dl)
-            
-                # 2. Get Questions (10 for Paper)
-                q_paper = brain_dl.get_questions_for_practice(
+        if _p1_done:
+            st.success(f"✅ 第一階段廣度挑題已完成（{_p1_cnt}/{_p1_total} 題），可自由選擇廣度或深度階段練習！")
+        else:
+            st.info(f"📊 第一階段進度：{_p1_cnt}/{_p1_total} 題（完成所有廣度題目後可解鎖第二階段）")
+
+        c_start, c_dl = st.columns([1, 1])
+
+        with c_dl:
+            if st.button("📄 下載模擬試卷 (A4)", use_container_width=True):
+                with st.spinner("正在生成 A4 模擬試卷..."):
+                    df_dl = load_data(QUESTION_BANK_ID)
+                    brain_dl = Brain(df_dl)
+                    q_paper = brain_dl.get_questions_for_practice(
+                        student_id=student['Student_ID'],
+                        target_module=target_mod,
+                        history_df=None,
+                        mode=mode_key,
+                        n=10,
+                        module_config_override=mod_info
+                    )
+                    if q_paper.empty:
+                        st.warning("無題目可生成")
+                    else:
+                        filter_str = f"{target_mod} | {mode_label}"
+                        doc_buffer = generate_a4_word(q_paper, filter_str)
+                        st.session_state['a4_download'] = doc_buffer
+                        st.session_state['a4_name'] = f"練習卷_{datetime.now().strftime('%H%M')}.docx"
+                        st.rerun()
+
+        if 'a4_download' in st.session_state:
+            st.download_button(
+                label="📥 點此下載 Word 檔",
+                data=st.session_state['a4_download'],
+                file_name=st.session_state['a4_name'],
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                type="primary"
+            )
+
+        start_clicked = False
+        with c_start:
+            start_clicked = st.button("🚀 開始測驗 (5題)", use_container_width=True)
+
+        # Phase 2 解鎖檢查
+        if start_clicked and mode_key == "phase2" and not _p1_done:
+            st.warning("⚠️ 尚未完成第一階段，請完成第一階段後再做弱點的挑題練習。")
+            start_clicked = False
+
+        if start_clicked:
+            with st.spinner("正在為您挑選題目... (The Brain 運算中)"):
+                folder_id = get_folder_id("Math_Crops")
+                if folder_id:
+                    st.session_state["quiz_image_map"] = get_image_map(folder_id)
+                else:
+                    st.session_state["quiz_image_map"] = {}
+
+                df = load_data(QUESTION_BANK_ID)
+                brain = Brain(df)
+
+                history_df = None
+                try:
+                    result = student_sys.sheets_service.spreadsheets().values().get(
+                        spreadsheetId=DIGITAL_FOOTPRINT_ID,
+                        range="'Digital_Footprint'!A:G"
+                    ).execute()
+                    fp_values = result.get('values', [])
+                    if fp_values and len(fp_values) >= 2:
+                        history_df = pd.DataFrame(fp_values[1:], columns=fp_values[0])
+                except Exception as e:
+                    st.warning(f"無法讀取答題紀錄，此輪可能有重複題目: {e}")
+
+                questions = brain.get_questions_for_practice(
                     student_id=student['Student_ID'],
-                    target_module=target_mod, 
-                    history_df=None,
+                    target_module=target_mod,
+                    history_df=history_df,
                     mode=mode_key,
-                    n=10, 
+                    n=5,
                     module_config_override=mod_info
                 )
-                
-                if q_paper.empty:
-                    st.warning("無題目可生成")
+
+                if questions.empty:
+                    st.warning("目前沒有適合的題目，或者題庫已空。")
                 else:
-                    filter_str = f"{target_mod} | {mode_label}"
-                    doc_buffer = generate_a4_word(q_paper, filter_str)
-                    
-                    st.session_state['a4_download'] = doc_buffer
-                    st.session_state['a4_name'] = f"練習卷_{datetime.now().strftime('%H%M')}.docx"
+                    uids = questions['UID'].tolist()
+                    student_sys.save_session(student['Student_ID'], uids, mode_key, target_mod)
+                    st.session_state["quiz_data"] = questions
+                    st.session_state["quiz_active"] = True
+                    st.session_state["quiz_start_time"] = datetime.now()
+                    st.session_state["current_answers"] = {}
                     st.rerun()
 
-    if 'a4_download' in st.session_state:
-        st.download_button(
-            label="📥 點此下載 Word 檔",
-            data=st.session_state['a4_download'],
-            file_name=st.session_state['a4_name'],
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            type="primary"
+    # ── 右欄：知識點統計圖表 ──
+    with col_right:
+        st.subheader("📈 知識點學習統計")
+        _chart_data = _render_unit_charts(
+            student['Student_ID'], _history_df_dash, _df_dash
         )
-        
-    start_clicked = False
-    with c_start:
-        start_clicked = st.button("🚀 開始測驗 (5題)", use_container_width=True)
 
-    # Phase 2 解鎖檢查
-    if start_clicked and mode_key == "phase2" and not _p1_done:
-        st.warning("⚠️ 尚未完成第一階段，請完成第一階段後再做弱點的挑題練習。")
-        start_clicked = False  # 攔截，不繼續
-
-    if start_clicked:
-        with st.spinner("正在為您挑選題目... (The Brain 運算中)"):
-            # 0. Init Resources
-            folder_id = get_folder_id("Math_Crops")
-            if folder_id:
-                st.session_state["quiz_image_map"] = get_image_map(folder_id)
-            else:
-                st.session_state["quiz_image_map"] = {}
-
-            # 1. Load Data
-            df = load_data(QUESTION_BANK_ID)
-            
-            # 2. Init Brain
-            brain = Brain(df)
-            
-            # 3. Fetch history from Digital_Footprint
-            history_df = None
-            try:
-                result = student_sys.sheets_service.spreadsheets().values().get(
-                    spreadsheetId=DIGITAL_FOOTPRINT_ID,
-                    range="'Digital_Footprint'!A:G"
-                ).execute()
-                fp_values = result.get('values', [])
-                if fp_values and len(fp_values) >= 2:
-                    fp_headers = fp_values[0]
-                    history_df = pd.DataFrame(fp_values[1:], columns=fp_headers)
-            except Exception as e:
-                st.warning(f"無法讀取答題紀錄，此輪可能有重複題目: {e}")
-            
-            # 4. Get Questions
-            questions = brain.get_questions_for_practice(
-                student_id=student['Student_ID'],
-                target_module=target_mod,
-                history_df=history_df,
-                mode=mode_key,
-                n=5,
-                module_config_override=mod_info
-            )
-            
-            if questions.empty:
-                st.warning("目前沒有適合的題目，或者題庫已空。")
-            else:
-                # Save Session for Persistence
-                uids = questions['UID'].tolist()
-                student_sys.save_session(student['Student_ID'], uids, mode_key, target_mod)
-
-                st.session_state["quiz_data"] = questions
-                st.session_state["quiz_active"] = True
-                st.session_state["quiz_start_time"] = datetime.now()
-                st.session_state["current_answers"] = {}
-                st.rerun()
 
 def render_quiz_session(student_sys, student):
     col_h, col_btn = st.columns([3, 1])
