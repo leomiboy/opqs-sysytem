@@ -268,19 +268,28 @@ def render_system_1():
             # 2. Init Brain
             brain = Brain(df)
             
-            # 3. Get Questions
-            # Pass module config to Brain
-            # We need to update Brain to accept this override
-            # For now, pass the module name, and let Brain (or logic here) handle.
-            # Brain needs the config dict.
+            # 3. Fetch history from Digital_Footprint
+            history_df = None
+            try:
+                result = student_sys.sheets_service.spreadsheets().values().get(
+                    spreadsheetId=DIGITAL_FOOTPRINT_ID,
+                    range="'Digital_Footprint'!A:G"
+                ).execute()
+                fp_values = result.get('values', [])
+                if fp_values and len(fp_values) >= 2:
+                    fp_headers = fp_values[0]
+                    history_df = pd.DataFrame(fp_values[1:], columns=fp_headers)
+            except Exception as e:
+                st.warning(f"無法讀取答題紀錄，此輪可能有重複題目: {e}")
             
+            # 4. Get Questions
             questions = brain.get_questions_for_practice(
                 student_id=student['Student_ID'],
-                target_module=target_mod, # Brain will likely default if not found in its hardcoded map
-                history_df=None, # TODO: fetch history
+                target_module=target_mod,
+                history_df=history_df,
                 mode=mode_key,
                 n=5,
-                module_config_override=mod_info # New parameter to pass dynamic config
+                module_config_override=mod_info
             )
             
             if questions.empty:

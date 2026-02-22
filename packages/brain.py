@@ -81,12 +81,27 @@ class Brain:
         scoped_df['UID'] = scoped_df['年份'].astype(str) + "_" + scoped_df['來源'].astype(str) + "_" + scoped_df['題號'].astype(str)
 
         # 3. Filter out history (Anti-Repeat)
-        available_df = scoped_df
+        available_df = scoped_df.copy()
         if history_df is not None and not history_df.empty:
-            student_history = history_df[history_df['Student_ID'] == student_id]
-            done_q_ids = student_history['Question_ID'].unique()
+            student_history = history_df[history_df['Student_ID'] == str(student_id)]
+            done_q_ids = set(student_history['Question_ID'].unique())
             available_df = available_df[~available_df['UID'].isin(done_q_ids)]
-            
+
+        # Phase 1: 若剩餘題目已不足以湊滿一輪（各難度皆不夠），
+        # 代表此模組題目已刷完一輪，自動 reset 從頭再刷
+        if mode == "phase1" and history_df is not None:
+            can_fill = False
+            for diff_level, count_needed in (dist if dist else {}).items():
+                if count_needed <= 0:
+                    continue
+                pool_count = len(available_df[available_df['難易度'] == diff_level])
+                if pool_count >= count_needed:
+                    can_fill = True
+                    break
+            if not can_fill:
+                # Reset: 忽略 history，從整個 scoped_df 重新選
+                available_df = scoped_df.copy()
+
         if available_df.empty:
             return pd.DataFrame()
 
