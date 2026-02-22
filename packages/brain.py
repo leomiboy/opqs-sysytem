@@ -82,40 +82,43 @@ class Brain:
 
         # 3. Filter out history (Anti-Repeat)
         available_df = scoped_df.copy()
+        done_q_ids = set()
         if history_df is not None and not history_df.empty:
             student_history = history_df[history_df['Student_ID'] == str(student_id)]
             done_q_ids = set(student_history['Question_ID'].unique())
             available_df = available_df[~available_df['UID'].isin(done_q_ids)]
 
-        # Phase 1: 若剩餘題目已不足以湊滿一輪（各難度皆不夠），
-        # 代表此模組題目已刷完一輪，自動 reset 從頭再刷
-        if mode == "phase1" and history_df is not None:
-            can_fill = False
-            for diff_level, count_needed in (dist if dist else {}).items():
-                if count_needed <= 0:
-                    continue
-                pool_count = len(available_df[available_df['難易度'] == diff_level])
-                if pool_count >= count_needed:
-                    can_fill = True
-                    break
-            if not can_fill:
-                # Reset: 忽略 history，從整個 scoped_df 重新選
+        # 4. Selection Logic
+        selected_dfs = []
+
+        if mode == "phase1":
+            n = sum(dist.values())
+            if n == 0: n = 5  # Safety
+
+            unseen_count = len(available_df)
+
+            if unseen_count == 0:
+                # 全部刷完一輪，從頭重選
                 available_df = scoped_df.copy()
+            elif unseen_count < n:
+                # 最後一輪：未做題不足 n 題
+                # 先把全部未做題強制放入，再從已做題補足到 n 題
+                selected_dfs.append(available_df)
+                need_more = n - unseen_count
+                done_pool = scoped_df[scoped_df['UID'].isin(done_q_ids)]
+                if not done_pool.empty:
+                    fill = done_pool.sample(n=min(need_more, len(done_pool)))
+                    selected_dfs.append(fill)
+                # 已選好，直接跳到 concat 回傳
+                if selected_dfs:
+                    return pd.concat(selected_dfs).sample(frac=1).reset_index(drop=True)
+                return pd.DataFrame()
+            # else: unseen_count >= n，正常走下方 dist 選題邏輯
 
         if available_df.empty:
             return pd.DataFrame()
 
-        # 4. Selection Logic
-        selected_dfs = []
-        
-        # Reset n based on dist if in Phase 1?
-        # User requested "Set numbers...". If user sets 3 Easy 2 Mid, n=5.
-        # If user sets 1 Easy, n=1.
-        # So n should be sum of dist in Phase 1.
-        if mode == "phase1":
-            n = sum(dist.values())
-            if n == 0: n = 5 # Safety
-        
+
         if mode == "phase2":
             # Phase 2: Deep Weakness Targeting (Strict 2-2-1 regardless of Module Count config, but respecting Module Filter Scope)
             # Logic: 2 Weak + 2 Normal + 1 Skilled
